@@ -1,8 +1,62 @@
 /*
-
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
-
-If your plugin does not need CSS, delete this file.
-
+  Doc Puller – plugin styles
 */
+
+/* ── Repository table ── */
+.doc-puller-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 0.9em;
+}
+
+.doc-puller-table th,
+.doc-puller-table td {
+  padding: 6px 10px;
+  border: 1px solid var(--background-modifier-border);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.doc-puller-table th {
+  background-color: var(--background-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.doc-puller-sha {
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* ── Status indicators ── */
+.doc-puller-status-none {
+  color: var(--text-muted);
+}
+
+.doc-puller-status-update {
+  color: var(--color-yellow);
+  font-weight: 600;
+}
+
+.doc-puller-status-ok {
+  color: var(--color-green);
+}
+
+/* ── Action buttons ── */
+.doc-puller-actions {
+  white-space: nowrap;
+}
+
+.doc-puller-actions button {
+  margin-right: 4px;
+}
+
+/* ── Empty state ── */
+.doc-puller-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 8px;
+}
+
