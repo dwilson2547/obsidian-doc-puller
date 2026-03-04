@@ -23,10 +23,16 @@ async function ensureFolder(vault: Vault, folderPath: string): Promise<void> {
 	}
 }
 
-function getVaultPath(filePath: string, docsFolder: string, destination: string): string {
-	const prefix = docsFolder ? `${docsFolder}/` : '';
-	const relative = prefix && filePath.startsWith(prefix) ? filePath.slice(prefix.length) : filePath;
-	return destination ? `${destination}/${relative}` : relative;
+function getVaultPath(filePath: string, docsFolders: string[], destination: string): string {
+	for (const folder of docsFolders) {
+		const prefix = folder ? `${folder}/` : '';
+		if (!prefix || filePath.startsWith(prefix)) {
+			const relative = prefix ? filePath.slice(prefix.length) : filePath;
+			return destination ? `${destination}/${relative}` : relative;
+		}
+	}
+	// File came from the whitelist only – preserve its repo-relative path
+	return destination ? `${destination}/${filePath}` : filePath;
 }
 
 // ── Repo picker modal ──────────────────────────────────────────────────────────
@@ -96,7 +102,24 @@ export default class DocPullerPlugin extends Plugin {
 	onunload() { /* nothing to clean up */ }
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<DocPullerSettings>);
+		const raw = (await this.loadData() ?? {}) as Record<string, unknown>;
+		// Migrate: old configs used docsFolder (string) instead of docsFolders (string[])
+		const repos = raw['repos'];
+		if (Array.isArray(repos)) {
+			raw['repos'] = (repos as Record<string, unknown>[]).map(repo => {
+				const migrated = { ...repo };
+				if (!Array.isArray(migrated['docsFolders'])) {
+					const legacy = migrated['docsFolder'];
+					migrated['docsFolders'] = (typeof legacy === 'string' && legacy) ? [legacy] : [];
+				}
+				delete migrated['docsFolder'];
+				if (!Array.isArray(migrated['fileWhitelist'])) {
+					migrated['fileWhitelist'] = [];
+				}
+				return migrated;
+			});
+		}
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw as Partial<DocPullerSettings>);
 	}
 
 	async saveSettings() {
@@ -124,19 +147,42 @@ export default class DocPullerPlugin extends Plugin {
 			);
 		}
 
-		const prefix = repo.docsFolder ? `${repo.docsFolder}/` : '';
-		const files = tree.filter(item =>
-			item.type === 'blob' && (prefix === '' || item.path.startsWith(prefix)),
-		);
+		// Collect files from each configured docs folder
+		const seen = new Set<string>();
+		const files: typeof tree = [];
+
+		for (const folder of repo.docsFolders) {
+			const prefix = folder ? `${folder}/` : '';
+			for (const item of tree) {
+				if (item.type === 'blob' && (!prefix || item.path.startsWith(prefix)) && !seen.has(item.path)) {
+					seen.add(item.path);
+					files.push(item);
+				}
+			}
+		}
+
+		// Add whitelisted files not already included
+		for (const wlPath of repo.fileWhitelist) {
+			if (!wlPath || seen.has(wlPath)) continue;
+			const item = tree.find(f => f.type === 'blob' && f.path === wlPath);
+			if (item) {
+				seen.add(item.path);
+				files.push(item);
+			}
+		}
 
 		if (files.length === 0) {
-			new Notice(`No files found under "${repo.docsFolder || '(root)'}" in ${repo.repoPath}`);
+			const sources = [
+				...repo.docsFolders.map(f => `"${f || '(root)'}"`),
+				...repo.fileWhitelist.map(f => `"${f}"`),
+			].join(', ');
+			new Notice(`No files found under ${sources || '(root)'} in ${repo.repoPath}`);
 			return;
 		}
 
 		let written = 0;
 		for (const file of files) {
-			const vaultPath = getVaultPath(file.path, repo.docsFolder, repo.destination);
+			const vaultPath = getVaultPath(file.path, repo.docsFolders, repo.destination);
 			const folderPath = vaultPath.includes('/') ? vaultPath.slice(0, vaultPath.lastIndexOf('/')) : '';
 			await ensureFolder(this.app.vault, folderPath);
 
@@ -198,7 +244,12 @@ export default class DocPullerPlugin extends Plugin {
 		for (const repo of this.settings.repos) {
 			try {
 				const { owner, repo: repoName } = parseRepoPath(repo.repoPath);
-				const latest = await getLatestCommitSha(token, owner, repoName, repo.branch, repo.docsFolder);
+				// When exactly one folder is configured and no whitelist, filter by path for precision.
+				// Otherwise check the branch HEAD to catch all relevant changes.
+				const pathFilter = (repo.docsFolders.length === 1 && repo.fileWhitelist.length === 0)
+					? (repo.docsFolders[0] ?? '')
+					: '';
+				const latest = await getLatestCommitSha(token, owner, repoName, repo.branch, pathFilter);
 				const changed = repo.lastCommitSha !== latest;
 				repo.hasUpdates = changed;
 				if (changed) updates++;

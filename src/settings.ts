@@ -31,12 +31,28 @@ export class RepoEditModal extends Modal {
 				.onChange(v => { this.config.repoPath = v.trim(); }));
 
 		new Setting(contentEl)
-			.setName('Docs folder')
-			.setDesc('Folder inside the repo to pull (leave empty for the whole repo)')
-			.addText(t => t
-				.setPlaceholder('Docs')
-				.setValue(this.config.docsFolder)
-				.onChange(v => { this.config.docsFolder = v.trim(); }));
+			.setName('Docs folders')
+			.setDesc('Folders inside the repo to pull (one per line). Leave empty to pull the whole repo root.')
+			.addTextArea(t => {
+				t.setPlaceholder('One folder per line');
+				t.setValue(this.config.docsFolders.join('\n'));
+				t.inputEl.rows = 3;
+				t.onChange(v => {
+					this.config.docsFolders = v.split('\n').map(s => s.trim()).filter(Boolean);
+				});
+			});
+
+		new Setting(contentEl)
+			.setName('File whitelist')
+			.setDesc('Specific repo-relative file paths to always pull (one per line), e.g. `README.md`')
+			.addTextArea(t => {
+				t.setPlaceholder('One file path per line');
+				t.setValue(this.config.fileWhitelist.join('\n'));
+				t.inputEl.rows = 3;
+				t.onChange(v => {
+					this.config.fileWhitelist = v.split('\n').map(s => s.trim()).filter(Boolean);
+				});
+			});
 
 		new Setting(contentEl)
 			.setName('Destination')
@@ -143,7 +159,7 @@ export class DocPullerSettingTab extends PluginSettingTab {
 			const table = containerEl.createEl('table', { cls: 'doc-puller-table' });
 			const thead = table.createEl('thead');
 			const headerRow = thead.createEl('tr');
-			for (const heading of ['Repository', 'Docs folder', 'Destination', 'Branch', 'Last commit', 'Status', 'Actions']) {
+			for (const heading of ['Repository', 'Docs folders', 'Whitelist', 'Destination', 'Branch', 'Last commit', 'Status', 'Actions']) {
 				headerRow.createEl('th', { text: heading });
 			}
 
@@ -162,7 +178,8 @@ export class DocPullerSettingTab extends PluginSettingTab {
 					const newRepo: RepoConfig = {
 						id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
 						repoPath: '',
-						docsFolder: 'docs',
+						docsFolders: ['docs'],
+						fileWhitelist: [],
 						destination: '',
 						branch: 'main',
 						lastCommitSha: '',
@@ -181,7 +198,8 @@ export class DocPullerSettingTab extends PluginSettingTab {
 		const tr = tbody.createEl('tr');
 
 		tr.createEl('td', { text: repo.repoPath });
-		tr.createEl('td', { text: repo.docsFolder || '(root)' });
+		tr.createEl('td', { text: repo.docsFolders.length > 0 ? repo.docsFolders.join(', ') : '(root)' });
+		tr.createEl('td', { text: repo.fileWhitelist.length > 0 ? repo.fileWhitelist.join(', ') : '—' });
 		tr.createEl('td', { text: repo.destination });
 		tr.createEl('td', { text: repo.branch });
 		tr.createEl('td', {
