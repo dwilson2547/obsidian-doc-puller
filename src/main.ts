@@ -1,99 +1,217 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import { App, FuzzySuggestModal, Notice, Plugin, Vault } from 'obsidian';
+import { DocPullerSettingTab } from './settings';
+import { DEFAULT_SETTINGS, DocPullerSettings, RepoConfig } from './types';
+import {
+	downloadFile,
+	getLatestCommitSha,
+	getRepoTree,
+	isTextFile,
+	parseRepoPath,
+} from './github';
 
-// Remember to rename these classes and interfaces!
+// ── Vault helpers ──────────────────────────────────────────────────────────────
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+async function ensureFolder(vault: Vault, folderPath: string): Promise<void> {
+	if (!folderPath) return;
+	const parts = folderPath.split('/').filter(Boolean);
+	let current = '';
+	for (const part of parts) {
+		current = current ? `${current}/${part}` : part;
+		if (!(await vault.adapter.exists(current))) {
+			await vault.adapter.mkdir(current);
+		}
+	}
+}
+
+function getVaultPath(filePath: string, docsFolder: string, destination: string): string {
+	const prefix = docsFolder ? `${docsFolder}/` : '';
+	const relative = prefix && filePath.startsWith(prefix) ? filePath.slice(prefix.length) : filePath;
+	return destination ? `${destination}/${relative}` : relative;
+}
+
+// ── Repo picker modal ──────────────────────────────────────────────────────────
+
+class RepoPicker extends FuzzySuggestModal<RepoConfig> {
+	private repos: RepoConfig[];
+	private onChoose: (repo: RepoConfig) => void;
+
+	constructor(app: App, repos: RepoConfig[], onChoose: (repo: RepoConfig) => void) {
+		super(app);
+		this.repos = repos;
+		this.onChoose = onChoose;
+		this.setPlaceholder('Select a repository to sync…');
+	}
+
+	getItems(): RepoConfig[] { return this.repos; }
+	getItemText(repo: RepoConfig): string { return `${repo.repoPath}  →  ${repo.destination}`; }
+	onChooseItem(repo: RepoConfig): void { this.onChoose(repo); }
+}
+
+// ── Plugin ─────────────────────────────────────────────────────────────────────
+
+export default class DocPullerPlugin extends Plugin {
+	settings: DocPullerSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		// Ribbon icon – sync all
+		this.addRibbonIcon('folder-sync', 'Sync all doc sources', async () => {
+			await this.syncAll();
 		});
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
+		// Commands
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
+			id: 'sync-all',
+			name: 'Sync all repos',
+			callback: async () => { await this.syncAll(); },
+		});
+
+		this.addCommand({
+			id: 'sync-one',
+			name: 'Sync repo…',
 			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+				if (this.settings.repos.length === 0) {
+					new Notice('No repositories configured. Open settings to add one.');
+					return;
 				}
-				return false;
-			}
+				new RepoPicker(this.app, this.settings.repos, repo => {
+					this.syncRepo(repo).catch(err => {
+						const msg = err instanceof Error ? err.message : String(err);
+						new Notice(`Sync failed for ${repo.repoPath}: ${msg}`);
+					});
+				}).open();
+			},
 		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
+		this.addCommand({
+			id: 'check-updates',
+			name: 'Check all repos for updates',
+			callback: async () => { await this.checkForUpdates(); },
 		});
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
+		this.addSettingTab(new DocPullerSettingTab(this.app, this));
 	}
 
-	onunload() {
-	}
+	onunload() { /* nothing to clean up */ }
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<DocPullerSettings>);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
-}
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
+	// ── Sync logic ───────────────────────────────────────────────────────────
+
+	/**
+	 * Download all files in the configured docs folder into the destination vault path.
+	 * Updates lastCommitSha and clears hasUpdates on success.
+	 */
+	async syncRepo(repo: RepoConfig): Promise<void> {
+		const { owner, repo: repoName } = parseRepoPath(repo.repoPath);
+		const token = this.settings.githubToken;
+
+		new Notice(`Syncing ${repo.repoPath}…`);
+
+		const { commitSha, tree, truncated } = await getRepoTree(token, owner, repoName, repo.branch);
+
+		if (truncated) {
+			throw new Error(
+				`Repository tree for ${repo.repoPath} is too large to retrieve completely. ` +
+				'Consider specifying a more specific docs folder.',
+			);
+		}
+
+		const prefix = repo.docsFolder ? `${repo.docsFolder}/` : '';
+		const files = tree.filter(item =>
+			item.type === 'blob' && (prefix === '' || item.path.startsWith(prefix)),
+		);
+
+		if (files.length === 0) {
+			new Notice(`No files found under "${repo.docsFolder || '(root)'}" in ${repo.repoPath}`);
+			return;
+		}
+
+		let written = 0;
+		for (const file of files) {
+			const vaultPath = getVaultPath(file.path, repo.docsFolder, repo.destination);
+			const folderPath = vaultPath.includes('/') ? vaultPath.slice(0, vaultPath.lastIndexOf('/')) : '';
+			await ensureFolder(this.app.vault, folderPath);
+
+			const data = await downloadFile(token, owner, repoName, file.path, repo.branch);
+			if (isTextFile(file.path)) {
+				await this.app.vault.adapter.write(vaultPath, new TextDecoder().decode(data));
+			} else {
+				await this.app.vault.adapter.writeBinary(vaultPath, data);
+			}
+			written++;
+		}
+
+		// Persist updated commit SHA
+		const idx = this.settings.repos.findIndex(r => r.id === repo.id);
+		if (idx !== -1) {
+			const entry = this.settings.repos[idx];
+			if (entry) {
+				entry.lastCommitSha = commitSha;
+				entry.hasUpdates = false;
+			}
+		}
+		await this.saveSettings();
+
+		new Notice(`✓ Synced ${written} file${written === 1 ? '' : 's'} from ${repo.repoPath}`);
 	}
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
+	/** Sync every configured repository in sequence. */
+	async syncAll(): Promise<void> {
+		if (this.settings.repos.length === 0) {
+			new Notice('No repositories configured. Open settings to add one.');
+			return;
+		}
+		let success = 0;
+		let failed = 0;
+		for (const repo of this.settings.repos) {
+			try {
+				await this.syncRepo(repo);
+				success++;
+			} catch (err) {
+				failed++;
+				const msg = err instanceof Error ? err.message : String(err);
+				new Notice(`✗ Failed to sync ${repo.repoPath}: ${msg}`);
+			}
+		}
+		new Notice(`Sync complete: ${success} succeeded, ${failed} failed.`);
 	}
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+	/**
+	 * For each configured repo, fetch the latest commit SHA and compare with
+	 * the stored SHA. Sets hasUpdates = true where a newer commit exists.
+	 */
+	async checkForUpdates(): Promise<void> {
+		if (this.settings.repos.length === 0) {
+			new Notice('No repositories configured.');
+			return;
+		}
+		const token = this.settings.githubToken;
+		let updates = 0;
+		for (const repo of this.settings.repos) {
+			try {
+				const { owner, repo: repoName } = parseRepoPath(repo.repoPath);
+				const latest = await getLatestCommitSha(token, owner, repoName, repo.branch, repo.docsFolder);
+				const changed = repo.lastCommitSha !== latest;
+				repo.hasUpdates = changed;
+				if (changed) updates++;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				new Notice(`Could not check ${repo.repoPath}: ${msg}`);
+			}
+		}
+		await this.saveSettings();
+		if (updates === 0) {
+			new Notice('All repos are up to date.');
+		} else {
+			new Notice(`${updates} repo${updates === 1 ? '' : 's'} have updates available.`);
+		}
 	}
 }
