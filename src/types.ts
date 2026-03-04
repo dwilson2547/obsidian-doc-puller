@@ -2,8 +2,10 @@ export interface RepoConfig {
 	id: string;
 	/** "owner/repo" or a full GitHub URL */
 	repoPath: string;
-	/** Folder inside the repo to pull, e.g. "docs". Leave empty for the whole repo root. */
-	docsFolder: string;
+	/** Folders inside the repo to pull, e.g. ["docs", "guides"]. Empty array means whole repo root. */
+	docsFolders: string[];
+	/** Specific file paths (repo-relative) to always pull, e.g. ["README.md"]. */
+	fileWhitelist: string[];
 	/** Vault-relative destination folder, e.g. "Notes/MyProject" */
 	destination: string;
 	/** Branch to pull from, default "main" */
