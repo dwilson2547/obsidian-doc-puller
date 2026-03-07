@@ -23,15 +23,7 @@ async function ensureFolder(vault: Vault, folderPath: string): Promise<void> {
 	}
 }
 
-function getVaultPath(filePath: string, docsFolders: string[], destination: string): string {
-	for (const folder of docsFolders) {
-		const prefix = folder ? `${folder}/` : '';
-		if (!prefix || filePath.startsWith(prefix)) {
-			const relative = prefix ? filePath.slice(prefix.length) : filePath;
-			return destination ? `${destination}/${relative}` : relative;
-		}
-	}
-	// File came from the whitelist only – preserve its repo-relative path
+function getVaultPath(filePath: string, destination: string): string {
 	return destination ? `${destination}/${filePath}` : filePath;
 }
 
@@ -182,7 +174,7 @@ export default class DocPullerPlugin extends Plugin {
 
 		let written = 0;
 		for (const file of files) {
-			const vaultPath = getVaultPath(file.path, repo.docsFolders, repo.destination);
+			const vaultPath = getVaultPath(file.path, repo.destination);
 			const folderPath = vaultPath.includes('/') ? vaultPath.slice(0, vaultPath.lastIndexOf('/')) : '';
 			await ensureFolder(this.app.vault, folderPath);
 

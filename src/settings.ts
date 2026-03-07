@@ -159,7 +159,7 @@ export class DocPullerSettingTab extends PluginSettingTab {
 			const table = containerEl.createEl('table', { cls: 'doc-puller-table' });
 			const thead = table.createEl('thead');
 			const headerRow = thead.createEl('tr');
-			for (const heading of ['Repository', 'Docs folders', 'Whitelist', 'Destination', 'Branch', 'Last commit', 'Status', 'Actions']) {
+			for (const heading of ['Repository', 'Status', 'Actions']) {
 				headerRow.createEl('th', { text: heading });
 			}
 
@@ -198,15 +198,6 @@ export class DocPullerSettingTab extends PluginSettingTab {
 		const tr = tbody.createEl('tr');
 
 		tr.createEl('td', { text: repo.repoPath });
-		tr.createEl('td', { text: repo.docsFolders.length > 0 ? repo.docsFolders.join(', ') : '(root)' });
-		tr.createEl('td', { text: repo.fileWhitelist.length > 0 ? repo.fileWhitelist.join(', ') : '—' });
-		tr.createEl('td', { text: repo.destination });
-		tr.createEl('td', { text: repo.branch });
-		tr.createEl('td', {
-			text: repo.lastCommitSha ? repo.lastCommitSha.slice(0, 7) : '—',
-			cls: 'doc-puller-sha',
-			attr: { title: repo.lastCommitSha || '' },
-		});
 
 		// Status cell
 		const statusTd = tr.createEl('td');
